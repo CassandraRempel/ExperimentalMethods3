@@ -1,0 +1,467 @@
+---
+title: "Assignment 4 - Heart rate, respiration and interpersonal coordination"
+author: "Riccardo Fusaroli"
+date: "August 20, 2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+##---SET UP---##
+  
+knitr::opts_chunk$set(echo = TRUE)
+
+#to start code, so we alwas access the file intended
+#gives the path to the given file and the file
+path_to_this_file <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(path_to_this_file)
+
+#load the libraries
+#the advantage of using pacman is it can install all packages and load them as well, if necessary
+pacman::p_load(tidyverse, ggpubr, groupdata2, lme4, lmerTest,)
+```
+
+# Assignment 4 - Heart rate, respiration and interpersonal coordination
+
+Physiological data (here heart rate [variability], and respiration) are increasingly popular. Historically treated as pernicious noise to be regressed out of neuro-imaging data, there is now increasing research on how these signals tell us something important about cognition and beyond being just a signal of cognitive processes also impact them in interesting ways. Advanced sport science, and the quantified self movement (closely followed by marketing and communication) have hailed continuous physiological tracking as a powerful way to access and modify attitudes, habits, and performance. Further, as team coordination (in the military, in decision processes and organizational contexts) is more and more in focus, research has attempted to measure how interpersonal coordination between physiological systems might tell us something important about e.g. emotional and cognitive coordination. See references in the reading list for more on this.
+
+In this assignment, you will learn to:
+- pre-process physiological data (and grow further your mad R skills)
+- model the continuous interdependence between two signals (using a multilevel model as proxy for a dynamical system approach)
+- conservatively assess the presence of coordination between to signals in a controlled context
+
+This assignment has two parts. The first part familiarizes you with heart rate, and respiration data and their preprocessing. The second part explores how to analyze interpersonal coordination of these signals.
+
+These are the questions you need to be able to answer at the end of the assignment (aka that you need to submit as part of the portfolio)
+
+1) How do you preprocess heart rate and respiration data? Describe the process. If any data needs to be excluded, list the excluded data and motivate the exclusion.
+
+2) Do you observe interpersonal coordination in heart rate and respiration? Describe your control baseline, the method used to quantify coordination, and the statistical models used to infer whether coordination was higher than in the baseline. Report the results of the models.
+
+3) Do you observe differences in coordination between conditions? Report the models and results.
+
+4) Is respiration coordination a likely driver of heart rate coordination? Describe how you would test for it. Bonus points if you actually run the tests and report methods and results.
+
+N.B. N.B. The data are collected by students from previous years (Study 1 - 4). Note that synchronous and turn-taking are the same across all four studies, but the third condition is different: in the first year it was self-paced joint reading; in the second to fourth years it was the tv-series conversation.
+
+## Let's get started
+
+### Exploring physiological signals
+The data files can be found here: https://www.dropbox.com/sh/bvvk7t3fvsplh9o/AADM6q4WrtXKvSwH5aAO1umta?dl=0
+
+- Choose one pair (one pair, three conditions, three files)
+- Load the logs
+- Produce a plot of the participants' respiration signal and a different one of the participants' HR signal.
+  N.B: remember the slides: artifacts, downsampling, scaling.
+  N.B. The gridExtra::grid.arrange() function allows you to display the plots side by side. E.g. grid.arrange(plot1, plot2, plot3, ncol=3). There are also smarter packages, like cowplot and ggpubr.
+- Can you eye-ball which condition if any displays more physiological coordination?
+
+### First we read one data file and identify the procedure
+- Load the file
+- correctly identify all columns
+- plot the data
+- deal with the artifacts
+- downsample the data
+- Add a column for study, group, trial and condition
+
+#references https://stackoverflow.com/questions/30299529/ggplot2-define-plot-layout-with-grid-arrange-as-argument-of-do-call
+
+#https://www.riinu.me/2019/04/new-intuitive-ways-to-reshape-data-in-r/
+
+```{r}
+
+#### -- Load Data -- ####
+
+#now I will load the file
+file <- read.csv ("RAWdata/Study1_G2_T1_TurnTaking.csv")
+
+#shows us the top of the file, so we know how it looks
+head(file)
+
+#plot
+ggplot(data = file) + geom_path(aes(time, HR1, color = "P1")) + geom_path(aes(time, HR2, color = "P2"))+ labs(x = "Time" , y = "Heart Rate") + theme_cleveland()
+#notice a relevant outlier or artifact
+
+#### -- remove outlier -- ####
+#this is Riccardo's function for removing outliers
+#this section builds the machine
+removeOuts <- function(ts,threshold){
+  
+  ts[ts > (mean(ts,na.rm=T) +
+             (threshold*sd(ts,na.rm=T))) | 
+       ts < (mean(ts,na.rm=T) -
+             (threshold*sd(ts,na.rm=T)))] = mean(ts,na.rm=T)
+  
+  return(ts)
+}
+
+
+#here we define the threshold
+threshold=2.5 # Default value at 2.5 sds from the mean.
+
+#make copy for removing outliers
+no_outlier_file <- file
+
+#over write the heart rate and respiration without outliers
+no_outlier_file$HR1 <- removeOuts(no_outlier_file$HR1, threshold)
+no_outlier_file$HR2 <- removeOuts(no_outlier_file$HR2, threshold)
+no_outlier_file$Resp1 <- removeOuts(no_outlier_file$Resp1, threshold)
+no_outlier_file$Resp2 <- removeOuts(no_outlier_file$Resp2, threshold)
+
+
+
+#plot the raw data and the removed artifact data
+
+artifacts <- ggplot(data = no_outlier_file) + geom_path (aes(time, HR1, color = "P1")) + geom_path (aes(time, HR2, color = "P2")) + labs(x = "Time" , y = "Heart Rate") + theme_cleveland()
+
+raw <- ggplot(data = file) + geom_path (aes(time, HR1, color = "P1")) + geom_path (aes(time, HR2, color = "P2")) + labs(x = "Time" , y = "Heart Rate") + theme_cleveland()
+
+#this line brings the two plots together for comparison
+ggpubr::ggarrange(raw, artifacts, labels = c("raw" , "artifacts removed"))
+
+
+#### -- scaling -- ####
+
+#makes data set larger but the advantage is we're not throwing away the old data
+#creates additional columns because the name doesn't exist
+#if already exists, R over writes the HR1
+#scaling changes the base mean to 0, so all are on the same playing field
+no_outlier_file$HR1_scaled <- scale(no_outlier_file$HR1)
+no_outlier_file$HR2_scaled <- scale(no_outlier_file$HR2)
+no_outlier_file$Resp1_scaled <- scale(no_outlier_file$Resp1)
+no_outlier_file$Resp2_scaled <- scale(no_outlier_file$Resp2)
+
+#plot scaled data, so we can see the changes and evaluate that it works properly
+#HR scaled to refer specifically to the scaled data
+scaledPlot <- ggplot(data = no_outlier_file) + geom_path (aes(time, HR1_scaled, color = "P1")) + geom_path (aes(time, HR2_scaled, color = "P2")) + labs(x = "Time" , y = "Heart Rate") + theme_cleveland()
+
+ggpubr::ggarrange(scaledPlot, artifacts, labels = c("Scaled" , "Artifacts removed"))
+
+
+
+
+#### -- downsampling -- ####
+#tells us how to do downsampling down the road
+no_outlier_file$rowname <- row.names(no_outlier_file)
+
+
+# Riccardo's code for downsampling
+#takes the mean of each set of a 100
+
+downSampledData <- no_outlier_file %>%
+  group(n = 100, method = 'greedy') %>%
+  dplyr::summarise(
+    time = mean(time,na.rm=T),
+    HR1 = mean(HR1_scaled,na.rm=T),
+    HR2 = mean(HR2_scaled,na.rm=T),
+    Resp1 = mean(Resp1_scaled,na.rm=T),
+    Resp2 = mean(Resp2_scaled,na.rm=T),
+    rowname = rowname[1]) #the row number refers to a start point for downsampling
+
+
+
+
+
+## Plot the downsampled data.
+
+downSamplePlot <- ggplot(data = downSampledData) + geom_path (aes(time, HR1, color = "P1")) + geom_path (aes(time, HR2, color = "P2")) + labs(x = "Time" , y = "Heart Rate") + theme_cleveland()
+
+ggpubr::ggarrange(scaledPlot, downSamplePlot, labels = c("Scaled" , "Down Sample"))
+
+
+
+#### -- Get Experiment Information from FileName -- ####
+#specify filename for experiment information
+fileName <- "Study1_G2_T1_TurnTaking.csv"
+
+#Extract information
+#identifies pattern in strings and texts to modify them
+#. any character
+#* as many as there in a character
+
+vars = str_match(fileName, "Study(.*?)_G(.*?)_T(.*?)_(.*?).csv")
+#put names onto the columns 
+names(vars) <- c("filename" , "study" , "group" , "trial" , "condition")
+
+#vars piped into mutate function to create a new column called group_id
+vars <- vars %>%
+  mutate(group_id = paste0(study,group))
+
+#combine Data Frames
+
+dataPrepped <- cbind (downSampledData, vars)
+head(dataPrepped)
+
+
+```
+
+
+## Now we are ready to go to load and pre-process all files
+
+Go through all the files (with a function passed onto map_df), check which files should be excluded, if any, and save the pre-processed time-series. This procedure is similar to what you have done in portfolio 3. You may use the code you wrote for that assignment and adjust it to this one.
+
+A couple of tips:
+- looping will be too slow for these files (remember you have ~200 000 rows in each file!). Making a function and using Map/Map_df is your salvation.
+- you may want your first step after loading a file to be downsampling, so that you don't work with enormous amount of data
+- each study restarts the group numbering, so you should make sure to change that (e.g. 100 * Study + Group)
+- you need to make sure all the data are meaningful or something has to be removed. Plotting is your friend. E.g. "Study1_G1_T1_Synchronous" has one bad respiration signal. We could replace it with NAs
+
+
+```{r}
+#Makes a function which loads, downsamples, removes artifacts, scales, and adds information from the file name
+#applies to all files
+
+# Define a function running the loading, artifact removal, scaling, downsampling, info adding.
+data_preprocess <- function(fileName){
+  ###read in file
+  #attached is declaring the column types to avoid excess printing
+  one_file = read_delim(paste0("RAWdata/",fileName), delim = ",", col_types = cols())
+  
+  #get information from file name, runs a pattern matching analysis through to csv. So we're adding Study to the file because it doesn't exist, as well as the group, trial and condition
+  vars = str_match(fileName,"Study(.*?)_G(.*?)_T(.*?)_(.*?).csv")
+  #save the above and puts the information into the data frame
+  vars = as.data.frame(vars)
+  #apply names to the data frame
+  names(vars) = c("filename","study","group","trial", "condition")
+#make a group_id column
+  #take vars and mutate (add column) group_id (study + group), it allows us to access the specific group we need, rather than everybody with the study identifier 
+  vars <- vars %>% 
+    mutate(group_id = paste0(study, group))
+  
+  #if study is number 4, one_file and says if it is named min change to time
+  if(vars[2] == 4){
+    rename(one_file, time = min)
+  }
+  
+  #add row name, declares our starting point
+  one_file$rowname <- row.names(one_file)
+  #groups into pieces of 100 data points and removes na's, down sampling
+  one_file = one_file %>%
+    group(n = 100, method = 'greedy') %>%
+    dplyr::summarise(
+      time = mean(time,na.rm=T),
+      HR1 = mean(HR1,na.rm=T),
+      HR2 = mean(HR2,na.rm=T),
+      Resp1 = mean(Resp1,na.rm=T),
+      Resp2 = mean(Resp2,na.rm=T),
+      rowname = rowname[1])
+ one_file <- cbind(one_file, vars)
+  # To be filled inone
+  
+  return(one_file)
+}
+
+
+
+
+#needs to know where to look and the pattern identifier
+#pattern equals 
+master_data <- list.files(path= "RAWdata/", pattern =".csv") %>%
+  #takes a list of inputs and this case, file names and gets a function to use on all the inputs
+  purrr::map_df(data_preprocess)
+
+
+#remvoing a group with only NA's
+master_data <- filter(master_data, group_id != 27)
+
+#fixing the time unit problem in study 3
+master_data[master_data$study == 3,]$time <- master_data[master_data$study == 3,]$time/100000 
+
+
+#removing outliers and scale the data
+threshold = 2.4 #lower than 2.5 to exclude the resp1 -10 values 
+master_data <- master_data %>% 
+  mutate(HR1 = removeOuts(master_data$HR1, threshold),
+        HR2 = removeOuts(master_data$HR2, threshold),
+        Resp1 = removeOuts(master_data$Resp1, threshold),
+        Resp2 = removeOuts(master_data$Resp2, threshold),
+        HR1_scaled = scale(master_data$HR1),
+        HR2_scaled = scale(master_data$HR2),
+        Resp1_scaled = scale(master_data$Resp1),
+        Resp2_scaled = scale(master_data$Resp2))
+
+
+
+#saving the datamaster
+write_csv(master_data, "port4_master_data.csv")
+
+
+
+
+```
+
+## Now we need to run some analysis
+
+Let's start with a multilevel model that accounts for 
+- stability (how each signal is autocorrelated)
+- interpersonal dependence (each signal is dependent from the previous state of the other signal)
+
+The data needs to be further prepared, so we can analyze both participants in the same model.
+We need to turn the data into a long format:
+- a column indicating own hr and one own respiration
+- a column indicating other hr and one other respiration
+- a column indicating change in hr from previous round and one in respiration
+
+We can then run an analysis where change is a function of one's previous state (stability, see slides), and the other's previous state (coupling). Make sure to:
+- set up the most interesting contrasts: how do these parameters vary by condition? which condition should be baseline?
+- set up the right random effects.
+- N.B. the model will be slow. Make sure it works on a subset of the data first!
+
+Bonus question: what if we include an additional layer? Is my heart rate just adjusting to yours, or also to how much you are adjusting to mine?
+- to start answering this we can add a column indicating the previous change in hr in the other and one in respiration
+- we can then build on the previous models by also adding the previous change in the other
+
+
+```{r}
+#takes the thing on the right and saves it as the things on the left
+
+master_data <- read_csv("port4_master_data.csv") 
+
+### -- make lag and change columns -- ###
+#creates a lag in the next group to bring it down in the column
+master_data <- master_data %>%
+  group_by (trial, group_id) %>%
+  mutate (HR1_lag = lag(HR1_scaled),
+          HR2_lag = lag(HR2_scaled),
+          Resp1_lag = lag(Resp1_scaled),
+          Resp2_lag = lag(Resp2_scaled))
+
+master_data <- master_data %>%
+  group_by (trial, group_id) %>%
+  mutate (HR1_change = HR1_scaled - HR1_lag,
+          HR2_change = HR2_scaled - HR2_lag,
+          Resp1_change = Resp1_scaled - Resp1_lag,
+          Resp2_change = Resp2_scaled -Resp2_lag)
+
+head(master_data)
+
+
+###--- Change to Long Format ---###
+
+#For the heart rate and respiration
+HR_self_data <- pivot_longer(master_data, c(HR1_scaled, HR2_scaled), names_to = "participant_id", values_to = "HR_self")
+HR_other_data <- pivot_longer(master_data, c(HR2_scaled, HR1_scaled),  values_to = "HR_other")
+Resp_self_data <- pivot_longer(master_data, c(Resp1_scaled, Resp2_scaled), values_to = "Resp_self")
+Resp_other_data <- pivot_longer(master_data, c(Resp2_scaled, Resp1_scaled),  values_to = "Resp_other")
+
+#For the lag
+HR_self_lag_data <- pivot_longer(master_data, c(HR1_lag, HR2_lag), values_to = "HR_self_lag")
+HR_other_lag_data <- pivot_longer(master_data, c(HR2_lag, HR1_lag),  values_to = "HR_other_lag")
+Resp_self_lag_data <- pivot_longer(master_data, c(Resp1_lag, Resp2_lag), values_to = "Resp_self_lag")
+Resp_other_lag_data <- pivot_longer(master_data, c(Resp2_lag, Resp1_lag),  values_to = "Resp_other_lag")
+
+#For the change
+HR_self_change_data <- pivot_longer(master_data, c(HR1_change, HR2_change), values_to = "HR_self_change")
+HR_other_change_data <- pivot_longer(master_data, c(HR2_change, HR1_change),  values_to = "HR_other_change")
+Resp_self_change_data <- pivot_longer(master_data, c(Resp1_change, Resp2_change), values_to = "Resp_self_change")
+Resp_other_change_data <- pivot_longer(master_data, c(Resp2_change, Resp1_change),  values_to = "Resp_other_change")
+
+#Put it together
+long_data <- cbind(HR_self_data,
+                   HR_other = HR_other_data$HR_other,
+                   Resp_other = Resp_other_data$Resp_other,
+                   Resp_self = Resp_self_data$Resp_self,
+                   
+                   HR_self_lag = HR_self_lag_data$HR_self_lag,
+                   HR_other_lag = HR_other_lag_data$HR_other_lag,
+                   Resp_other_lag = Resp_other_lag_data$Resp_other_lag,
+                   Resp_self_lag = Resp_self_lag_data$Resp_self_lag,
+                   
+                   HR_self_change = HR_self_change_data$HR_self_change,
+                   HR_other_change = HR_other_change_data$HR_other_change,
+                   Resp_other_change = Resp_other_change_data$Resp_other_change,
+                   Resp_self_change = Resp_self_change_data$Resp_self_change
+                   )
+
+#add a column with a unique specifier for each participant
+#takes number and paste to group id
+long_data <- long_data %>%
+  mutate (participant_num = str_extract(participant_id, ("\\d")),
+          participant_id = paste0(group_id, str_extract(participant_id, ("\\d"))))
+
+#adds column "type" and puts the value as "real" all the way down
+long_data$type = "real"
+
+
+#saving the datamaster
+write_csv(long_data, "port4_long_data.csv")
+
+
+
+```
+
+## Now we need to create control baselines.
+
+First shuffled controls, then surrogate pairs.
+
+### Creating controls: shuffled controls
+
+Shuffled controls break the temporal dependencies of time-series by shuffling the value within one time-series. This ensures the "coordination" observed is not due to the actual values in the series and not their sequence.
+Tip: sample() is your friend, but make sure to shuffle things within participant/condition and not throughout the whole dataset
+ 
+```{r}
+
+###---make shuffled data set---###
+#take long data and make a copy, then we shuffle the data points within each trial and change the type to shuffled
+shuffle_data <- long_data %>% 
+  group_by(participant_id, condition) %>%
+  mutate(HR_self = sample(HR_self),
+         HR_other = sample(HR_other),
+         type = "Shuffled")
+
+```
+ 
+ 
+### TRICKY! Creating controls: surrogate pair controls
+ - Per each real pair, identify at least one surrogate pair (matching one of the participants, with somebody doing the same task, but in a different pair)
+
+```{r}
+
+###---Surrogate Pairs---###
+#identifying all distinct conditions and id's
+#makes sure conditions match
+pairs_list <- long_data %>% 
+  distinct(group_id, condition)
+
+#list of pairs once shifted
+#we want to shuffle within conditions
+#id's for old and new pairs
+shuffled_pairs <- pairs_list %>%
+  group_by(condition) %>%
+  mutate (new_pair = sample(group_id) ,
+          partner1_id= paste0(condition, group_id),
+          partner2_id = paste0(condition, new_pair)) %>%
+  ungroup() %>%
+  select(partner1_id, partner2_id)
+
+#start from wide format
+wide_data_partner1 <- master_data %>% 
+  ungroup() %>%
+  mutate(partner1_id = paste0(condition, group_id)) %>%
+  #starts with says I'll find you anything that begins with this
+  select(partner1_id, starts_with(c("HR1" , "Resp1"))) %>%
+  left_join(shuffled_pairs, by = "partner1_id")
+
+#ones with partner 1 and ones with partner 2
+wide_data_partner2 <- master_data %>% 
+  ungroup() %>%
+  mutate(partner2_id = paste0(condition, group_id)) %>%
+  #starts with says I'll find you anything that begins with this
+  select(partner2_id, starts_with(c("HR2" , "Resp2"))) %>%
+  left_join(shuffled_pairs, by = "partner2_id") %>%
+  select(starts_with(c("HR2" , "Resp2")))
+
+wide_surrogate_data <- cbind(wide_data_partner1, wide_data_partner2)
+
+#moving wide to long formatted data
+
+  
+```
+ 
+
+### Effects of respiration coordination on heart rate coordination
+ - describe how you would test those.
+ - Optional: run the models and report them
+
+ 
